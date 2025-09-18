@@ -9,7 +9,7 @@
 
 int main(void) {
     char a, b;
-    printf("task1 (variant 5) - enter two characters (separated by space or newline):\n");
+    printf("enter two characters (separated by space or newline):\n");
     if (scanf(" %c %c", &a, &b) != 2) {
         fprintf(stderr, "Invalid input\n");
         return 1;

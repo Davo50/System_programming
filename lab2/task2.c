@@ -20,7 +20,7 @@ int main(void) {
     *p = 42;
     *q = -7;
 
-    printf("task2 (variant 5) - two dynamically allocated ints:\n");
+    printf("two dynamically allocated ints:\n");
     printf("*p = %d, *q = %d\n", *p, *q);
 
     /* Освобождение памяти */

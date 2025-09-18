@@ -15,7 +15,7 @@ int main(void) {
     double a, b, c;
     double res;
 
-    printf("task5 (variant 5) - enter three numbers (first call): ");
+    printf("enter three numbers (first call): ");
     if (scanf("%lf %lf %lf", &a, &b, &c) != 3) {
         fprintf(stderr, "Invalid input\n");
         return 1;

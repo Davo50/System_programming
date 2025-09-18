@@ -9,7 +9,7 @@
 
 int main(void) {
     int n;
-    printf("task3 (variant 5) - enter array length n: ");
+    printf("enter array length n: ");
     if (scanf("%d", &n) != 1 || n <= 0) {
         fprintf(stderr, "Invalid n\n");
         return 1;

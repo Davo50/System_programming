@@ -61,7 +61,7 @@ int main(void) {
     Book *arr = malloc(N * sizeof(Book));
     if (!arr) { fprintf(stderr, "Memory allocation failed\n"); return 1; }
 
-    printf("task6 (variant 5) - up to %d books.\n", N);
+    printf("up to %d books.\n", N);
     printf("If you want to use built-in sample data, press Enter on the first 'author' prompt.\n");
 
     int filled = 0;
