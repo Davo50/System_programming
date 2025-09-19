@@ -18,7 +18,6 @@ typedef struct {
 } Book;
 
 void init_books(Book **arr_ptr, int *n_ptr) {
-    /* Для простоты — используем небольшой набор тестовых данных */
     int n = 6;
     Book *arr = malloc(n * sizeof(Book));
     if (!arr) { *arr_ptr = NULL; *n_ptr = 0; return; }

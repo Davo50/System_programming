@@ -7,12 +7,6 @@
   Адрес состоит из полей: "улица", "дом", "квартира".
   Ввести информацию по до 100 жителям. Вывести фамилии жителей, которые живут
   в одном городе с первым жителем из списка.
-
-  Поведение:
-  - Введите данные для каждого жителя (фамилия, город, улица, дом, квартира).
-  - Если при вводе фамилии первого жителя нажать Enter (пустая строка),
-    будет загружен набор примерных данных.
-  - Если при вводе фамилии в дальнейшем нажать Enter — ввод завершится раньше 100.
 */
 
 #include <stdio.h>
@@ -37,7 +31,6 @@ typedef struct {
     } addr;
 } Resident;
 
-/* trim trailing newline and carriage return */
 static void trim_newline(char *s) {
     if (!s) return;
     size_t l = strlen(s);
@@ -46,19 +39,15 @@ static void trim_newline(char *s) {
     }
 }
 
-/* trim leading and trailing spaces in-place */
 static void trim_spaces(char *s) {
     if (!s) return;
-    /* trim trailing */
     size_t len = strlen(s);
     while (len > 0 && isspace((unsigned char)s[len-1])) s[--len] = '\0';
-    /* trim leading */
     size_t i = 0;
     while (s[i] && isspace((unsigned char)s[i])) i++;
     if (i > 0) memmove(s, s + i, strlen(s + i) + 1);
 }
 
-/* case-insensitive equality (ASCII), returns 1 if equal, 0 otherwise */
 static int ci_equal(const char *a, const char *b) {
     if (!a || !b) return 0;
     while (*a && *b) {
@@ -99,13 +88,11 @@ int main(void) {
         char prompt[128];
         snprintf(prompt, sizeof(prompt), "Resident %d — фамилия (Enter чтобы закончить ввод): ", i + 1);
         if (!prompt_readline(prompt, arr[i].surname, sizeof(arr[i].surname))) {
-            /* EOF */
             break;
         }
         trim_spaces(arr[i].surname);
         if (strlen(arr[i].surname) == 0) {
             if (i == 0) {
-                /* load sample data */
                 Resident sample[] = {
                     { "Ivanov", "Moscow", { "Tverskaya", "12", "34" } },
                     { "Petrov", "Saint-Petersburg", { "Nevsky", "24", "12" } },
@@ -119,22 +106,18 @@ int main(void) {
                 filled = s;
                 printf("Загружено %d примерных записей.\n\n", filled);
             }
-            break; /* stop input if blank surname (and not first or first handled) */
+            break;
         }
 
-        /* city */
         if (!prompt_readline("  Город: ", arr[i].city, sizeof(arr[i].city))) { free(arr); return 1; }
         trim_spaces(arr[i].city);
 
-        /* street */
         if (!prompt_readline("  Улица: ", arr[i].addr.street, sizeof(arr[i].addr.street))) { free(arr); return 1; }
         trim_spaces(arr[i].addr.street);
 
-        /* house */
         if (!prompt_readline("  Дом: ", arr[i].addr.house, sizeof(arr[i].addr.house))) { free(arr); return 1; }
         trim_spaces(arr[i].addr.house);
 
-        /* apartment */
         if (!prompt_readline("  Квартира: ", arr[i].addr.apt, sizeof(arr[i].addr.apt))) { free(arr); return 1; }
         trim_spaces(arr[i].addr.apt);
 
@@ -143,7 +126,6 @@ int main(void) {
     }
 
     if (filled == 0) {
-        /* If user immediately pressed Enter and did not load sample above, load sample as fallback */
         Resident sample[] = {
             { "Ivanov", "Moscow", { "Tverskaya", "12", "34" } },
             { "Petrov", "Saint-Petersburg", { "Nevsky", "24", "12" } },
@@ -158,7 +140,6 @@ int main(void) {
         printf("Ни одной записи введено — загружено %d примерных записей.\n\n", filled);
     }
 
-    /* find city of first resident */
     const char *city0 = arr[0].city;
     if (!city0 || strlen(city0) == 0) {
         printf("У первого жителя не указано название города — нечего сравнивать.\n");
@@ -166,7 +147,6 @@ int main(void) {
         return 0;
     }
 
-    /* normalize city0: trim and lowercase copy */
     char city0_norm[MAX_CITY];
     strncpy(city0_norm, city0, MAX_CITY - 1);
     city0_norm[MAX_CITY - 1] = '\0';
@@ -178,7 +158,6 @@ int main(void) {
 
     int found = 0;
     for (int i = 0; i < filled; ++i) {
-        /* compare city i with city0 case-insensitive after trimming */
         char cityi[MAX_CITY];
         strncpy(cityi, arr[i].city, MAX_CITY - 1); cityi[MAX_CITY - 1] = '\0';
         trim_spaces(cityi);
