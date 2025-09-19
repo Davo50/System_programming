@@ -59,8 +59,6 @@ static int ci_equal(const char *a, const char *b) {
     return (*a == '\0' && *b == '\0');
 }
 
-/* safer input: prompt and read line into buf (size includes space for terminator).
-   Returns 1 if read, 0 on EOF/error. */
 static int prompt_readline(const char *prompt, char *buf, size_t size) {
     if (prompt) {
         printf("%s", prompt);

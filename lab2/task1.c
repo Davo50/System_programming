@@ -19,12 +19,10 @@ int main(void) {
 
     printf("Before: a = '%c' (0x%02x), b = '%c' (0x%02x)\n", a, (unsigned char)a, b, (unsigned char)b);
 
-    /* изменить значение a через указатель: сдвинуть символ на +1 */
     *pa = (char)((unsigned char)(*pa) + 1);
 
     printf("After change via pointer: a = '%c', b = '%c'\n", a, b);
 
-    /* поменять местами через указатели */
     char temp = *pa;
     *pa = *pb;
     *pb = temp;

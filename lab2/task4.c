@@ -40,7 +40,6 @@ int main(void) {
         }
     }
 
-    /* First pass: count positive elements to allocate C */
     int m = 0;
     for (int i = 0; i < n; ++i) if (b[i] > 0.0) ++m;
 

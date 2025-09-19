@@ -16,14 +16,12 @@ int main(void) {
         return 1;
     }
 
-    /* Присваиваем произвольные значения прямо в операторе присвоения */
     *p = 42;
     *q = -7;
 
     printf("two dynamically allocated ints:\n");
     printf("*p = %d, *q = %d\n", *p, *q);
 
-    /* Освобождение памяти */
     free(p);
     free(q);
     return 0;
