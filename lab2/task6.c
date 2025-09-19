@@ -1,156 +1,200 @@
 /*
  task6.c
- Лабораторная работа 2, Задание 6, Вариант 5
- Описание: Описать структуру книги (author, title, publisher, year, price).
- Заполнить массив (10 записей — можно использовать тестовые данные), переписать
- в новый массив только книги, в названии которых содержится ровно 3 буквы 'о'
- (учтены латинские 'o'/'O' и кириллические 'о'/'О' в UTF-8), затем отсортировать
- новый массив по названию издательства по алфавиту и вывести.
+ Лабораторная работа 2, модифицированное Задание (ваш вариант)
+ Описание:
+  Определить комбинированный (структурный) тип для представления анкеты жителя,
+  состоящей из его фамилии, названия города, где он проживает, и городского адреса.
+  Адрес состоит из полей: "улица", "дом", "квартира".
+  Ввести информацию по до 100 жителям. Вывести фамилии жителей, которые живут
+  в одном городе с первым жителем из списка.
+
+  Поведение:
+  - Введите данные для каждого жителя (фамилия, город, улица, дом, квартира).
+  - Если при вводе фамилии первого жителя нажать Enter (пустая строка),
+    будет загружен набор примерных данных.
+  - Если при вводе фамилии в дальнейшем нажать Enter — ввод завершится раньше 100.
 */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+
+#define MAX_RESIDENTS 100
+#define MAX_NAME 64
+#define MAX_CITY 64
+#define MAX_STREET 64
+#define MAX_HOUSE 16
+#define MAX_APT 16
 
 typedef struct {
-    char author[64];
-    char title[128];
-    char publisher[64];
-    int year;
-    double price;
-} Book;
+    char surname[MAX_NAME];
+    char city[MAX_CITY];
+    struct {
+        char street[MAX_STREET];
+        char house[MAX_HOUSE];
+        char apt[MAX_APT];
+    } addr;
+} Resident;
 
+/* trim trailing newline and carriage return */
 static void trim_newline(char *s) {
+    if (!s) return;
     size_t l = strlen(s);
-    if (l && s[l-1] == '\n') s[l-1] = '\0';
-}
-
-/* Подсчёт букв 'o'/'O' (латинские) и кириллической 'о'/'О' в UTF-8 (D0 BE / D0 9E) */
-static int count_o_utf8(const char *s) {
-    int cnt = 0;
-    const unsigned char *p = (const unsigned char *)s;
-    while (*p) {
-        if (*p == 'o' || *p == 'O') {
-            ++cnt;
-            ++p;
-        } else if (*p == 0xD0) {
-            /* возможный кириллический символ в диапазоне D0 ?? */
-            if (p[1]) {
-                if (p[1] == 0xBE || p[1] == 0x9E) { /* 'о' U+043E -> D0 BE, 'О' U+041E -> D0 9E */
-                    ++cnt;
-                }
-                p += 2;
-            } else {
-                ++p;
-            }
-        } else {
-            ++p;
-        }
+    while (l > 0 && (s[l-1] == '\n' || s[l-1] == '\r')) {
+        s[--l] = '\0';
     }
-    return cnt;
 }
 
-static int cmp_publisher(const void *a, const void *b) {
-    const Book *x = a;
-    const Book *y = b;
-    return strcmp(x->publisher, y->publisher);
+/* trim leading and trailing spaces in-place */
+static void trim_spaces(char *s) {
+    if (!s) return;
+    /* trim trailing */
+    size_t len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len-1])) s[--len] = '\0';
+    /* trim leading */
+    size_t i = 0;
+    while (s[i] && isspace((unsigned char)s[i])) i++;
+    if (i > 0) memmove(s, s + i, strlen(s + i) + 1);
+}
+
+/* case-insensitive equality (ASCII), returns 1 if equal, 0 otherwise */
+static int ci_equal(const char *a, const char *b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        unsigned char ca = (unsigned char)*a;
+        unsigned char cb = (unsigned char)*b;
+        if (tolower(ca) != tolower(cb)) return 0;
+        a++; b++;
+    }
+    return (*a == '\0' && *b == '\0');
+}
+
+/* safer input: prompt and read line into buf (size includes space for terminator).
+   Returns 1 if read, 0 on EOF/error. */
+static int prompt_readline(const char *prompt, char *buf, size_t size) {
+    if (prompt) {
+        printf("%s", prompt);
+        fflush(stdout);
+    }
+    if (!fgets(buf, (int)size, stdin)) return 0;
+    trim_newline(buf);
+    return 1;
 }
 
 int main(void) {
-    const int N = 10;
-    Book *arr = malloc(N * sizeof(Book));
-    if (!arr) { fprintf(stderr, "Memory allocation failed\n"); return 1; }
+    Resident *arr = malloc(MAX_RESIDENTS * sizeof(Resident));
+    if (!arr) {
+        fprintf(stderr, "Memory allocation failed\n");
+        return 1;
+    }
 
-    printf("up to %d books.\n", N);
-    printf("If you want to use built-in sample data, press Enter on the first 'author' prompt.\n");
+    printf("Введите данные до %d жителей.\n", MAX_RESIDENTS);
+    printf("На первом шаге: если нажмете Enter (пустую строку) — будут загружены примерные данные.\n\n");
 
     int filled = 0;
-    char buf[256];
+    char tmp[256];
 
-    for (int i = 0; i < N; ++i) {
-        printf("Enter author for book %d (or blank to finish / blank on first -> use sample): ", i+1);
-        if (!fgets(arr[i].author, sizeof(arr[i].author), stdin)) break;
-        trim_newline(arr[i].author);
-
-        if (strlen(arr[i].author) == 0) {
-            if (i == 0) {
-                /* use sample data */
-                Book sample[] = {
-                    {"Author A", "О, одно слово", "AlphaPub", 2001, 10.50},
-                    {"Author B", "Second book", "ZetaPub", 1999, 12.00},
-                    {"Author C", "Mooro", "BetaPub", 2010, 8.99},
-                    {"Author D", "Oooops", "GammaPub", 2005, 15.00},
-                    {"Author E", "Book of ooo", "AlphaPub", 2018, 20.00},
-                    {"Author F", "No o here", "DeltaPub", 2020, 5.00}
-                };
-                int s = (int)(sizeof(sample)/sizeof(sample[0]));
-                for (int k = 0; k < s && k < N; ++k) arr[k] = sample[k];
-                filled = s;
-            }
+    for (int i = 0; i < MAX_RESIDENTS; ++i) {
+        char prompt[128];
+        snprintf(prompt, sizeof(prompt), "Resident %d — фамилия (Enter чтобы закончить ввод): ", i + 1);
+        if (!prompt_readline(prompt, arr[i].surname, sizeof(arr[i].surname))) {
+            /* EOF */
             break;
         }
-
-        /* title */
-        printf("Enter title: ");
-        if (!fgets(arr[i].title, sizeof(arr[i].title), stdin)) { filled = i; break; }
-        trim_newline(arr[i].title);
-
-        /* publisher */
-        printf("Enter publisher: ");
-        if (!fgets(arr[i].publisher, sizeof(arr[i].publisher), stdin)) { filled = i; break; }
-        trim_newline(arr[i].publisher);
-
-        /* year and price using fgets + sscanf to avoid leftover newline issues */
-        printf("Enter year and price (e.g. 1999 12.50): ");
-        if (!fgets(buf, sizeof(buf), stdin)) { fprintf(stderr, "Invalid input\n"); free(arr); return 1; }
-        if (sscanf(buf, "%d %lf", &arr[i].year, &arr[i].price) != 2) {
-            fprintf(stderr, "Invalid year/price format\n");
-            free(arr);
-            return 1;
+        trim_spaces(arr[i].surname);
+        if (strlen(arr[i].surname) == 0) {
+            if (i == 0) {
+                /* load sample data */
+                Resident sample[] = {
+                    { "Ivanov", "Moscow", { "Tverskaya", "12", "34" } },
+                    { "Petrov", "Saint-Petersburg", { "Nevsky", "24", "12" } },
+                    { "Sidorov", "Moscow", { "Arbat", "10", "5" } },
+                    { "Kuznetsov", "Kazan", { "Baumana", "3", "1" } },
+                    { "Smirnova", "Moscow", { "Lenina", "7", "9" } },
+                    { "Volkov", "Sochi", { "Primorskaya", "100", "2" } }
+                };
+                int s = (int)(sizeof(sample) / sizeof(sample[0]));
+                for (int k = 0; k < s && k < MAX_RESIDENTS; ++k) arr[k] = sample[k];
+                filled = s;
+                printf("Загружено %d примерных записей.\n\n", filled);
+            }
+            break; /* stop input if blank surname (and not first or first handled) */
         }
 
+        /* city */
+        if (!prompt_readline("  Город: ", arr[i].city, sizeof(arr[i].city))) { free(arr); return 1; }
+        trim_spaces(arr[i].city);
+
+        /* street */
+        if (!prompt_readline("  Улица: ", arr[i].addr.street, sizeof(arr[i].addr.street))) { free(arr); return 1; }
+        trim_spaces(arr[i].addr.street);
+
+        /* house */
+        if (!prompt_readline("  Дом: ", arr[i].addr.house, sizeof(arr[i].addr.house))) { free(arr); return 1; }
+        trim_spaces(arr[i].addr.house);
+
+        /* apartment */
+        if (!prompt_readline("  Квартира: ", arr[i].addr.apt, sizeof(arr[i].addr.apt))) { free(arr); return 1; }
+        trim_spaces(arr[i].addr.apt);
+
         filled = i + 1;
+        printf("\n");
     }
 
     if (filled == 0) {
-        /* If user pressed blank on first prompt, sample was loaded above and filled set.
-           But in case nothing loaded, also fallback to sample: */
-        Book sample[] = {
-            {"Author A", "О, одно слово", "AlphaPub", 2001, 10.50},
-            {"Author B", "Second book", "ZetaPub", 1999, 12.00},
-            {"Author C", "Mooro", "BetaPub", 2010, 8.99},
-            {"Author D", "Oooops", "GammaPub", 2005, 15.00},
-            {"Author E", "Book of ooo", "AlphaPub", 2018, 20.00},
-            {"Author F", "No o here", "DeltaPub", 2020, 5.00}
+        /* If user immediately pressed Enter and did not load sample above, load sample as fallback */
+        Resident sample[] = {
+            { "Ivanov", "Moscow", { "Tverskaya", "12", "34" } },
+            { "Petrov", "Saint-Petersburg", { "Nevsky", "24", "12" } },
+            { "Sidorov", "Moscow", { "Arbat", "10", "5" } },
+            { "Kuznetsov", "Kazan", { "Baumana", "3", "1" } },
+            { "Smirnova", "Moscow", { "Lenina", "7", "9" } },
+            { "Volkov", "Sochi", { "Primorskaya", "100", "2" } }
         };
-        int s = (int)(sizeof(sample)/sizeof(sample[0]));
-        for (int k = 0; k < s && k < N; ++k) arr[k] = sample[k];
+        int s = (int)(sizeof(sample) / sizeof(sample[0]));
+        for (int k = 0; k < s && k < MAX_RESIDENTS; ++k) arr[k] = sample[k];
         filled = s;
+        printf("Ни одной записи введено — загружено %d примерных записей.\n\n", filled);
     }
 
-    /* select books with exactly 3 'o' letters (latin or cyrillic) */
-    Book *sel = malloc(filled * sizeof(Book));
-    if (!sel) { fprintf(stderr, "Memory allocation failed\n"); free(arr); return 1; }
-    int m = 0;
+    /* find city of first resident */
+    const char *city0 = arr[0].city;
+    if (!city0 || strlen(city0) == 0) {
+        printf("У первого жителя не указано название города — нечего сравнивать.\n");
+        free(arr);
+        return 0;
+    }
+
+    /* normalize city0: trim and lowercase copy */
+    char city0_norm[MAX_CITY];
+    strncpy(city0_norm, city0, MAX_CITY - 1);
+    city0_norm[MAX_CITY - 1] = '\0';
+    trim_spaces(city0_norm);
+    for (char *p = city0_norm; *p; ++p) *p = (char)tolower((unsigned char)*p);
+
+    printf("Первый житель: фамилия='%s', город='%s'\n", arr[0].surname, arr[0].city);
+    printf("Список фамилий жителей из того же города ('%s'):\n", arr[0].city);
+
+    int found = 0;
     for (int i = 0; i < filled; ++i) {
-        int cnt = count_o_utf8(arr[i].title);
-        if (cnt == 3) {
-            sel[m++] = arr[i];
+        /* compare city i with city0 case-insensitive after trimming */
+        char cityi[MAX_CITY];
+        strncpy(cityi, arr[i].city, MAX_CITY - 1); cityi[MAX_CITY - 1] = '\0';
+        trim_spaces(cityi);
+        for (char *p = cityi; *p; ++p) *p = (char)tolower((unsigned char)*p);
+
+        if (strcmp(cityi, city0_norm) == 0) {
+            printf("  %s\n", arr[i].surname);
+            ++found;
         }
     }
-
-    if (m == 0) {
-        printf("No books found with exactly 3 letters 'o' in title.\n");
+    if (found == 0) {
+        printf("  (нет жителей в том же городе)\n");
     } else {
-        qsort(sel, m, sizeof(Book), cmp_publisher);
-        printf("Selected books (sorted by publisher):\n");
-        for (int i = 0; i < m; ++i) {
-            printf("%d) Author: %s\n   Title: %s\n   Publisher: %s, Year: %d, Price: %.2f\n",
-                   i+1, sel[i].author, sel[i].title, sel[i].publisher, sel[i].year, sel[i].price);
-        }
+        printf("Всего найдено: %d\n", found);
     }
 
-    free(sel);
     free(arr);
     return 0;
 }
