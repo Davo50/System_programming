@@ -31,7 +31,7 @@ typedef struct {
     } addr;
 } Resident;
 
-static void trim_newline(char *s) {
+void trim_newline(char *s) {
     if (!s) return;
     size_t l = strlen(s);
     while (l > 0 && (s[l-1] == '\n' || s[l-1] == '\r')) {
@@ -39,7 +39,7 @@ static void trim_newline(char *s) {
     }
 }
 
-static void trim_spaces(char *s) {
+void trim_spaces(char *s) {
     if (!s) return;
     size_t len = strlen(s);
     while (len > 0 && isspace((unsigned char)s[len-1])) s[--len] = '\0';
@@ -48,7 +48,7 @@ static void trim_spaces(char *s) {
     if (i > 0) memmove(s, s + i, strlen(s + i) + 1);
 }
 
-static int ci_equal(const char *a, const char *b) {
+int ci_equal(const char *a, const char *b) {
     if (!a || !b) return 0;
     while (*a && *b) {
         unsigned char ca = (unsigned char)*a;
@@ -59,7 +59,7 @@ static int ci_equal(const char *a, const char *b) {
     return (*a == '\0' && *b == '\0');
 }
 
-static int prompt_readline(const char *prompt, char *buf, size_t size) {
+int prompt_readline(const char *prompt, char *buf, size_t size) {
     if (prompt) {
         printf("%s", prompt);
         fflush(stdout);

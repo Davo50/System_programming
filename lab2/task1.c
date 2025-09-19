@@ -23,9 +23,11 @@ int main(void) {
 
     printf("After change via pointer: a = '%c', b = '%c'\n", a, b);
 
-    char temp = *pa;
-    *pa = *pb;
-    *pb = temp;
+    if (pa != pb) {
+        *pa ^= *pb;
+        *pb ^= *pa;
+        *pa ^= *pb;
+    }
 
     printf("After swap via pointers: a = '%c', b = '%c'\n", a, b);
 
