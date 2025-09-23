@@ -48,7 +48,6 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpE
 BOOL RegisterForDeviceNotifications(SERVICE_STATUS_HANDLE hService);
 void Cleanup();
 
-// Utilities
 static void GetTimestampW(wchar_t *buf, size_t buflen) {
     time_t t = time(NULL);
     struct tm tmv;
@@ -72,7 +71,6 @@ void WriteEventLog(WORD wType, LPCWSTR format, ...) {
     }
 }
 
-// Read REG_SZ
 BOOL ReadRegistryString(LPCWSTR valueName, LPWSTR *outStr) {
     HKEY hKey = NULL;
     LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, SERVICE_REG_PATH, 0, KEY_READ, &hKey);
@@ -94,7 +92,6 @@ BOOL ReadRegistryString(LPCWSTR valueName, LPWSTR *outStr) {
     return TRUE;
 }
 
-// Read REG_MULTI_SZ into allocated buffer (caller must free)
 BOOL ReadRegistryStrings(LPCWSTR valueName, LPWSTR *outBuf, DWORD *outSizeBytes) {
     HKEY hKey = NULL;
     LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, SERVICE_REG_PATH, 0, KEY_READ, &hKey);
@@ -125,14 +122,12 @@ void AppendLogToFile(const WCHAR *filepath, const WCHAR *msg) {
         return;
     }
     DWORD written = 0;
-    // convert msg (WCHAR) to UTF-8 for file
     int utf8len = WideCharToMultiByte(CP_UTF8, 0, msg, -1, NULL, 0, NULL, NULL);
     if (utf8len > 0) {
         char *utf8 = (char*)malloc(utf8len);
         if (utf8) {
             WideCharToMultiByte(CP_UTF8, 0, msg, -1, utf8, utf8len, NULL, NULL);
             WriteFile(h, utf8, (DWORD)(strlen(utf8)), &written, NULL);
-            // add newline
             const char nl = '\n';
             WriteFile(h, &nl, 1, &written, NULL);
             free(utf8);
@@ -141,23 +136,19 @@ void AppendLogToFile(const WCHAR *filepath, const WCHAR *msg) {
     CloseHandle(h);
 }
 
-// Called when device arrives/removes
 void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
-    (void)wParam; // убрать предупреждение о неиспользуемом параметре
+    (void)wParam;
     PDEV_BROADCAST_HDR pHdr = (PDEV_BROADCAST_HDR)lParam;
     if (!pHdr) return;
 
     if (pHdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE || pHdr->dbch_devicetype == DBT_DEVTYP_HANDLE) {
         PDEV_BROADCAST_DEVICEINTERFACE_W pDi = (PDEV_BROADCAST_DEVICEINTERFACE_W)pHdr;
-        LPCWSTR devName = pDi->dbcc_name; // might be like \\?\USB#VID_xxxx&PID_xxxx#SERIAL#{...}
+        LPCWSTR devName = pDi->dbcc_name;
         wchar_t deviceInstanceId[1024] = {0};
 
-        // try to extract device instance id from name; some cases already contain instance id after last backslash
         if (devName && wcslen(devName) < _countof(deviceInstanceId)) {
-            // strip leading "\\?\" if present
             LPCWSTR p = devName;
             if (wcsncmp(p, L"\\\\?\\", 4) == 0) p += 4;
-            // replace '#' with '\' to form instance? Often device interface name contains '#' segments.
             size_t j=0;
             for (size_t i=0; p[i] && j < _countof(deviceInstanceId)-1; ++i) {
                 WCHAR ch = p[i];
@@ -166,7 +157,6 @@ void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
             deviceInstanceId[j]=0;
         }
 
-        // Extract serial from instance id (last segment after last backslash)
         WCHAR serial[256] = L"(unknown)";
         LPCWSTR lastSlash = wcsrchr(deviceInstanceId, L'\\');
         if (lastSlash && *(lastSlash+1)) {
@@ -185,20 +175,16 @@ void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
         StringCchPrintfW(evmsg, _countof(evmsg), L"%s - USB %s: instance='%s' serial='%s'",
                          ts, arrived ? L"ARRIVED" : L"REMOVED", deviceInstanceId[0] ? deviceInstanceId : L"(none)", serial);
 
-        // Log to Event Viewer
         WriteEventLog(EVENTLOG_INFORMATION_TYPE, evmsg);
 
-        // Append to file (path from registry)
         LPWSTR logfile = NULL;
         if (ReadRegistryString(REG_VALUE_FILEPATH, &logfile)) {
             AppendLogToFile(logfile, evmsg);
             free(logfile);
         } else {
-            // no file path configured
             WriteEventLog(EVENTLOG_WARNING_TYPE, L"No log file path set in registry at HKLM\\%s\\%s", SERVICE_REG_PATH, REG_VALUE_FILEPATH);
         }
 
-        // If arrived, check blocked list
         if (arrived) {
             LPWSTR multi = NULL;
             DWORD sizeBytes = 0;
@@ -219,7 +205,6 @@ void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
     }
 }
 
-// Attempt to disable device by instance id (best-effort)
 void TryBlockDeviceByInstanceId(LPCWSTR deviceInstanceId) {
     if (!deviceInstanceId || !*deviceInstanceId) {
         WriteEventLog(EVENTLOG_ERROR_TYPE, L"TryBlockDevice: no device instance id available.");
@@ -249,9 +234,8 @@ void TryBlockDeviceByInstanceId(LPCWSTR deviceInstanceId) {
     }
 }
 
-// Service control handler (extended)
 DWORD WINAPI ServiceCtrlHandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
-    (void)lpContext; // убрать предупреждение
+    (void)lpContext;
     switch (dwControl) {
     case SERVICE_CONTROL_STOP:
         if (g_ServiceStatusHandle) {
@@ -282,7 +266,6 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpE
     }
 }
 
-// Register for device notifications using service handle (DEVICE_NOTIFY_SERVICE_HANDLE)
 BOOL RegisterForDeviceNotifications(SERVICE_STATUS_HANDLE hService) {
     DEV_BROADCAST_DEVICEINTERFACE_W NotificationFilter;
     ZeroMemory(&NotificationFilter, sizeof(NotificationFilter));
@@ -341,7 +324,6 @@ void WINAPI ServiceMain(DWORD dwArgc, LPWSTR *lpszArgv) {
     WriteEventLog(EVENTLOG_INFORMATION_TYPE, L"%s started.", SERVICE_NAME);
 
     while (WaitForSingleObject(g_hStopEvent, 500) == WAIT_TIMEOUT) {
-        // idle
     }
 
     WriteEventLog(EVENTLOG_INFORMATION_TYPE, L"%s stopping...", SERVICE_NAME);
@@ -352,7 +334,6 @@ void WINAPI ServiceMain(DWORD dwArgc, LPWSTR *lpszArgv) {
     SetServiceStatus(g_ServiceStatusHandle, &ss);
 }
 
-// Service entry point
 int wmain(int argc, wchar_t *argv[]) {
     SERVICE_TABLE_ENTRYW DispatchTable[] = {
         { (LPWSTR)SERVICE_NAME, (LPSERVICE_MAIN_FUNCTIONW)ServiceMain },
