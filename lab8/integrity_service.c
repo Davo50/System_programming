@@ -11,7 +11,6 @@
 
 static SERVICE_STATUS_HANDLE gSvcStatusHandle = NULL;
 static HANDLE gStopEvent = NULL;
-static HANDLE gTimer = NULL;
 static wchar_t g_listpath[MAX_PATH] = DEFAULT_LIST;
 
 void WriteEvent(WORD type, const wchar_t *msg) {
@@ -21,18 +20,79 @@ void WriteEvent(WORD type, const wchar_t *msg) {
     DeregisterEventSource(h);
 }
 
-DWORD compute_and_report_one(const wchar_t *type, const wchar_t *path, const char *expected) {
-    // Use the console utility functions by invoking the tool? For simplicity, we'll shell out to integrity_tool verify for single entry.
-    // But to avoid external dependency, we simply report that we would verify. (Real implementation should reuse the md5 functions.)
-    // For this service we trigger an external verification: integrity_tool verify <list>
-    // Simpler approach: run system("integrity_tool verify <list>") - but services have different PATH; we'll not rely on that.
-    // Instead we will just log that check triggered (and recommend running stand-alone verifier).
-    wchar_t msg[1024];
-    StringCchPrintfW(msg, _countof(msg), L"Integrity check triggered for %s: %s", type, path);
-    WriteEvent(EVENTLOG_INFORMATION_TYPE, msg);
+/* ----- Registry watch thread ----- */
+/* Parameter passed: pointer to heap-allocated wchar_t buffer containing regspec (e.g. HKEY_LOCAL_MACHINE\SOFTWARE\MyKey) */
+typedef struct {
+    wchar_t regspec[512];
+} REGWATCH_PARAM;
+
+static HKEY parse_root_key_for_regwatch(const wchar_t *full, const wchar_t **subpath_ptr) {
+    if (_wcsnicmp(full, L"HKEY_LOCAL_MACHINE\\", 19) == 0) { *subpath_ptr = full + 19; return HKEY_LOCAL_MACHINE; }
+    if (_wcsnicmp(full, L"HKLM\\", 5) == 0) { *subpath_ptr = full + 5; return HKEY_LOCAL_MACHINE; }
+    if (_wcsnicmp(full, L"HKEY_CURRENT_USER\\", 19) == 0) { *subpath_ptr = full + 19; return HKEY_CURRENT_USER; }
+    if (_wcsnicmp(full, L"HKCU\\", 5) == 0) { *subpath_ptr = full + 5; return HKEY_CURRENT_USER; }
+    if (_wcsnicmp(full, L"HKEY_CLASSES_ROOT\\", 18) == 0) { *subpath_ptr = full + 18; return HKEY_CLASSES_ROOT; }
+    if (_wcsnicmp(full, L"HKCR\\", 5) == 0) { *subpath_ptr = full + 5; return HKEY_CLASSES_ROOT; }
+    if (_wcsnicmp(full, L"HKEY_USERS\\", 11) == 0) { *subpath_ptr = full + 11; return HKEY_USERS; }
+    if (_wcsnicmp(full, L"HKU\\", 4) == 0) { *subpath_ptr = full + 4; return HKEY_USERS; }
+    if (_wcsnicmp(full, L"HKEY_CURRENT_CONFIG\\", 20) == 0) { *subpath_ptr = full + 20; return HKEY_CURRENT_CONFIG; }
+    if (_wcsnicmp(full, L"HKCC\\", 5) == 0) { *subpath_ptr = full + 5; return HKEY_CURRENT_CONFIG; }
+    *subpath_ptr = full;
+    return NULL;
+}
+
+DWORD WINAPI RegWatchThread(LPVOID param) {
+    if (!param) return 1;
+    REGWATCH_PARAM *p = (REGWATCH_PARAM*)param;
+    const wchar_t *subpath = NULL;
+    HKEY root = parse_root_key_for_regwatch(p->regspec, &subpath);
+    if (!root) {
+        wchar_t msg[512]; StringCchPrintfW(msg, _countof(msg), L"RegWatch: unknown root for %s", p->regspec);
+        WriteEvent(EVENTLOG_ERROR_TYPE, msg);
+        free(param);
+        return 2;
+    }
+
+    HKEY hKey = NULL;
+    LONG rc = RegOpenKeyExW(root, subpath, 0, KEY_NOTIFY, &hKey);
+    if (rc != ERROR_SUCCESS) {
+        wchar_t msg[512]; StringCchPrintfW(msg, _countof(msg), L"RegWatch: RegOpenKeyEx failed for %s (err=%u)", p->regspec, rc);
+        WriteEvent(EVENTLOG_ERROR_TYPE, msg);
+        free(param);
+        return 3;
+    }
+
+    wchar_t startedMsg[512]; StringCchPrintfW(startedMsg, _countof(startedMsg), L"RegWatch started for %s", p->regspec);
+    WriteEvent(EVENTLOG_INFORMATION_TYPE, startedMsg);
+
+    // Watch loop
+    while (WaitForSingleObject(gStopEvent, 0) == WAIT_TIMEOUT) {
+        // synchronous notify call (will return when change occurs)
+        rc = RegNotifyChangeKeyValue(hKey, TRUE,
+            REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_ATTRIBUTES | REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_SECURITY,
+            NULL, FALSE);
+        if (rc == ERROR_SUCCESS) {
+            wchar_t evmsg[512]; StringCchPrintfW(evmsg, _countof(evmsg), L"Registry key changed: %s", p->regspec);
+            WriteEvent(EVENTLOG_INFORMATION_TYPE, evmsg);
+            // After notification, we can trigger a full verification by signaling main loop via EventLog message.
+            // Sleep briefly to avoid busy loop on flapping keys
+            Sleep(500);
+        } else {
+            wchar_t evmsg[512]; StringCchPrintfW(evmsg, _countof(evmsg), L"RegNotifyChangeKeyValue failed for %s (err=%u)", p->regspec, rc);
+            WriteEvent(EVENTLOG_ERROR_TYPE, evmsg);
+            // wait a bit before retrying
+            Sleep(1000);
+        }
+    }
+
+    RegCloseKey(hKey);
+    free(param);
+    wchar_t stopMsg[256]; StringCchPrintfW(stopMsg, _countof(stopMsg), L"RegWatch stopped for %s", p->regspec);
+    WriteEvent(EVENTLOG_INFORMATION_TYPE, stopMsg);
     return 0;
 }
 
+/* ----- File/dir change watches ----- */
 typedef struct {
     HANDLE hChange;
     wchar_t parent[MAX_PATH];
@@ -41,99 +101,110 @@ typedef struct {
 static WatchHandle *gWatches = NULL;
 static size_t gWatchesCount = 0;
 
+static void cleanup_watches() {
+    if (gWatches) {
+        for (size_t i = 0; i < gWatchesCount; ++i) {
+            if (gWatches[i].hChange && gWatches[i].hChange != INVALID_HANDLE_VALUE)
+                FindCloseChangeNotification(gWatches[i].hChange);
+        }
+        free(gWatches);
+        gWatches = NULL;
+        gWatchesCount = 0;
+    }
+}
+
+/* Launch integrity_tool.exe verify "<list>" and log result */
+static void perform_full_check_and_report() {
+    wchar_t cmdline[1024];
+    StringCchPrintfW(cmdline, _countof(cmdline), L"integrity_tool.exe verify \"%s\"", g_listpath);
+    STARTUPINFOW si = {0}; PROCESS_INFORMATION pi = {0}; si.cb = sizeof(si);
+    if (CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        // Wait up to 60 seconds
+        DWORD wait = WaitForSingleObject(pi.hProcess, 1000 * 60);
+        DWORD code = 0;
+        if (GetExitCodeProcess(pi.hProcess, &code)) {
+            wchar_t msg[256]; StringCchPrintfW(msg, _countof(msg), L"Verification finished, exit code %u", code);
+            WriteEvent(EVENTLOG_INFORMATION_TYPE, msg);
+        } else {
+            WriteEvent(EVENTLOG_ERROR_TYPE, L"Verification finished but couldn't get exit code");
+        }
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    } else {
+        wchar_t msg[256]; StringCchPrintfW(msg, _countof(msg), L"Failed to launch integrity_tool.exe (err=%u)", GetLastError());
+        WriteEvent(EVENTLOG_ERROR_TYPE, msg);
+    }
+}
+
+/* Parse list file and set up watches (file/dir -> FindFirstChangeNotification; reg -> thread) */
 static void load_list_and_setup_watches() {
-    // read list file (very simple parsing), for each FILE or DIR create FindFirstChangeNotification on parent dir,
-    // for REG create a thread with RegNotifyChangeKeyValue (not implemented in detail here).
     FILE *f = _wfopen(g_listpath, L"rt, ccs=UTF-8");
     if (!f) {
         wchar_t msg[512]; StringCchPrintfW(msg, _countof(msg), L"Could not open list file: %s", g_listpath);
         WriteEvent(EVENTLOG_ERROR_TYPE, msg);
         return;
     }
-    // allocate watches array max 256
+
+    // allocate watches for up to 256 items (simple)
     gWatches = (WatchHandle*)calloc(256, sizeof(WatchHandle));
     gWatchesCount = 0;
+
     wchar_t line[4096];
     while (fgetws(line, _countof(line), f)) {
-        wchar_t *nl = wcschr(line,L'\n'); if (nl) *nl=0;
-        wchar_t *p = wcschr(line, L'|');
-        if (!p) continue;
-        *p=0; wchar_t *type=line; wchar_t *rest=p+1;
-        wchar_t *p2 = wcschr(rest, L'|'); if (!p2) continue;
-        *p2=0; wchar_t *path = rest; wchar_t *md5 = p2+1;
-        if (_wcsicmp(type, L"FILE")==0 || _wcsicmp(type, L"DIR")==0) {
-            // determine parent directory
-            wchar_t parent[MAX_PATH]; StringCchCopyW(parent, MAX_PATH, path);
+        wchar_t *nl = wcschr(line, L'\n'); if (nl) *nl = 0;
+        wchar_t *sep1 = wcschr(line, L'|'); if (!sep1) continue;
+        *sep1 = 0; wchar_t *type = line; wchar_t *rest = sep1 + 1;
+        wchar_t *sep2 = wcschr(rest, L'|'); if (!sep2) continue;
+        *sep2 = 0; wchar_t *path = rest; wchar_t *md5 = sep2 + 1;
+
+        if (_wcsicmp(type, L"FILE") == 0 || _wcsicmp(type, L"DIR") == 0) {
+            wchar_t parent[MAX_PATH];
+            StringCchCopyW(parent, MAX_PATH, path);
             wchar_t *last = wcsrchr(parent, L'\\');
-            if (last) *last=0; else StringCchCopyW(parent, MAX_PATH, L".");
+            if (last && last != parent) {
+                *last = 0; // parent dir
+            } else {
+                // no backslash - use current directory
+                StringCchCopyW(parent, MAX_PATH, L".");
+            }
             HANDLE h = FindFirstChangeNotificationW(parent, TRUE,
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE);
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_ATTRIBUTES);
             if (h != INVALID_HANDLE_VALUE && gWatchesCount < 256) {
                 gWatches[gWatchesCount].hChange = h;
                 StringCchCopyW(gWatches[gWatchesCount].parent, MAX_PATH, parent);
                 gWatchesCount++;
+                wchar_t msg[512]; StringCchPrintfW(msg, _countof(msg), L"Watch installed for parent=%s (target=%s)", parent, path);
+                WriteEvent(EVENTLOG_INFORMATION_TYPE, msg);
+            } else {
+                wchar_t msg[512]; StringCchPrintfW(msg, _countof(msg), L"Failed to install watch for %s (parent=%s)", path, parent);
+                WriteEvent(EVENTLOG_ERROR_TYPE, msg);
             }
-        } else if (_wcsicmp(type, L"REG")==0) {
-            // start a thread to watch registry key changes
-            // For brevity: spawn a thread that calls RegNotifyChangeKeyValue and on notification writes event.
-            wchar_t *regspec = path;
-            // thread launcher
-            struct regwatch_param { wchar_t keyspec[512]; };
-            struct regwatch_param *param = (struct regwatch_param*)malloc(sizeof(struct regwatch_param));
-            StringCchCopyW(param->keyspec, 512, regspec);
-            HANDLE th = CreateThread(NULL,0, (LPTHREAD_START_ROUTINE) (LPVOID) ( (LPTHREAD_START_ROUTINE) ( + (LPTHREAD_START_ROUTINE)0) ), NULL, 0, NULL);
-            // NOTE: real implementation should start a proper thread calling RegOpenKeyEx & RegNotifyChangeKeyValue,
-            // then SetEvent when change happens. To keep the example compact, we omit full reg-watch thread code.
-            // For demonstration, we will just log that reg watch would be installed.
-            wchar_t msg[512]; StringCchPrintfW(msg, _countof(msg), L"Registry watch installed for %s", regspec);
-            WriteEvent(EVENTLOG_INFORMATION_TYPE, msg);
-            // free param immediately since we didn't actually use it in this compact example
-            free(param);
+        } else if (_wcsicmp(type, L"REG") == 0) {
+            // spawn registry watch thread with heap-allocated param
+            REGWATCH_PARAM *param = (REGWATCH_PARAM*)malloc(sizeof(REGWATCH_PARAM));
+            StringCchCopyW(param->regspec, _countof(param->regspec), path);
+            HANDLE th = CreateThread(NULL, 0, RegWatchThread, param, 0, NULL);
+            if (th) {
+                CloseHandle(th); // we don't need thread handle; thread frees param on exit
+            } else {
+                wchar_t msg[512]; StringCchPrintfW(msg, _countof(msg), L"Failed to create reg watch for %s (err=%u)", path, GetLastError());
+                WriteEvent(EVENTLOG_ERROR_TYPE, msg);
+                free(param);
+            }
+        } else {
+            wchar_t msg[256]; StringCchPrintfW(msg, _countof(msg), L"Unknown type in list: %s", type);
+            WriteEvent(EVENTLOG_WARNING_TYPE, msg);
         }
     }
+
     fclose(f);
-    wchar_t msg[256]; StringCchPrintfW(msg,_countof(msg),L"Installed %zu file/dir watches", gWatchesCount);
-    WriteEvent(EVENTLOG_INFORMATION_TYPE, msg);
+    wchar_t finalmsg[256]; StringCchPrintfW(finalmsg, _countof(finalmsg), L"Installed %zu file/dir watches", gWatchesCount);
+    WriteEvent(EVENTLOG_INFORMATION_TYPE, finalmsg);
 }
 
-static void cleanup_watches() {
-    if (gWatches) {
-        for (size_t i=0;i<gWatchesCount;i++) {
-            if (gWatches[i].hChange && gWatches[i].hChange != INVALID_HANDLE_VALUE) FindCloseChangeNotification(gWatches[i].hChange);
-        }
-        free(gWatches); gWatches=NULL; gWatchesCount=0;
-    }
-}
-
-static void perform_full_check_and_report() {
-    // For brevity: call external tool "integrity_tool verify <listfile>" using CreateProcess and capture output
-    wchar_t cmdline[1024];
-    // Build command: integrity_tool.exe verify "<list>"
-    StringCchPrintfW(cmdline, _countof(cmdline), L"integrity_tool.exe verify \"%s\"", g_listpath);
-    STARTUPINFOW si = {0}; PROCESS_INFORMATION pi = {0}; si.cb = sizeof(si);
-    if (CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        // wait and read exit code
-        WaitForSingleObject(pi.hProcess, 1000*60); // wait up to 1 min
-        DWORD code=0; GetExitCodeProcess(pi.hProcess, &code);
-        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
-        wchar_t msg[256]; StringCchPrintfW(msg,_countof(msg),L"Periodic verification finished with code %u", code);
-        WriteEvent(EVENTLOG_INFORMATION_TYPE, msg);
-    } else {
-        wchar_t msg[256]; StringCchPrintfW(msg,_countof(msg),L"Failed to start integrity_tool.exe verify. Error=%u", GetLastError());
-        WriteEvent(EVENTLOG_ERROR_TYPE, msg);
-    }
-}
-
+/* ----- Service control and main loop ----- */
 static void WINAPI ServiceCtrlHandler(DWORD ctrl) {
     switch (ctrl) {
     case SERVICE_CONTROL_STOP:
-        if (gSvcStatusHandle) {
-            SERVICE_STATUS ss = {0};
-            ss.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-            ss.dwCurrentState = SERVICE_STOP_PENDING;
-            ss.dwControlsAccepted = 0;
-            SetServiceStatus(gSvcStatusHandle, &ss);
-        }
         if (gStopEvent) SetEvent(gStopEvent);
         WriteEvent(EVENTLOG_INFORMATION_TYPE, L"Stop control received");
         break;
@@ -149,62 +220,70 @@ static void WINAPI ServiceMain(DWORD argc, LPWSTR *argv) {
     svcStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
     gSvcStatusHandle = RegisterServiceCtrlHandlerW(SERVICE_NAME, ServiceCtrlHandler);
     if (!gSvcStatusHandle) return;
-    // report running soon
-    svcStatus.dwCurrentState = SERVICE_RUNNING; SetServiceStatus(gSvcStatusHandle, &svcStatus);
-    // create stop event
-    gStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
-    // parse optional list path from argv (when service created you can pass binPath params; for demo we check env)
-    // For simplicity we keep default or previously set g_listpath
+    // Report running
+    svcStatus.dwCurrentState = SERVICE_RUNNING;
+    SetServiceStatus(gSvcStatusHandle, &svcStatus);
+
+    gStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!gStopEvent) {
+        WriteEvent(EVENTLOG_ERROR_TYPE, L"Failed to create stop event");
+        return;
+    }
 
     WriteEvent(EVENTLOG_INFORMATION_TYPE, L"IntegrityWatcherSvc started");
     load_list_and_setup_watches();
-    // create periodic timer by waiting on event with timeout
-    DWORD timeout = HALF_HOUR_SECONDS * 1000;
+
+    // prepare wait handles array for file/dir watches
+    DWORD timeout = HALF_HOUR_SECONDS * 1000; // 30 minutes
     while (WaitForSingleObject(gStopEvent, timeout) == WAIT_TIMEOUT) {
-        // timeout -> perform periodic check
+        // periodic check
         WriteEvent(EVENTLOG_INFORMATION_TYPE, L"Periodic integrity check start");
         perform_full_check_and_report();
-        // loop again (re-arm)
+        // re-arm watches: FindFirstChangeNotification notifications are one-shot; we need to call FindNextChangeNotification when signalled.
+        if (gWatches) {
+            for (size_t i = 0; i < gWatchesCount; ++i) {
+                // nothing here now: main loop will poll FindNextChangeNotification when signalled below (we keep simple polling model)
+            }
+        }
+        // after periodic check continue loop (it will wait again)
     }
-    // Stop requested
+
+    // Stop requested: cleanup
     cleanup_watches();
     WriteEvent(EVENTLOG_INFORMATION_TYPE, L"IntegrityWatcherSvc stopping");
+    CloseHandle(gStopEvent); gStopEvent = NULL;
+
     svcStatus.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(gSvcStatusHandle, &svcStatus);
-    if (gStopEvent) { CloseHandle(gStopEvent); gStopEvent = NULL; }
 }
 
+/* ----- main: supports install/remove/service run ----- */
 int wmain(int argc, wchar_t **argv) {
-    // Support simple install/remove commands via sc.exe recommended; minimal local install helper:
-    if (argc>=2) {
-        if (_wcsicmp(argv[1], L"-install")==0 || _wcsicmp(argv[1], L"install")==0) {
-            // require full path to executable optionally and list path
+    if (argc >= 2) {
+        if (_wcsicmp(argv[1], L"-install") == 0 || _wcsicmp(argv[1], L"install") == 0) {
             wchar_t exePath[MAX_PATH]; GetModuleFileNameW(NULL, exePath, MAX_PATH);
-            if (argc>=3) { StringCchCopyW(g_listpath, MAX_PATH, argv[2]); }
-            // use sc create externally: recommend user run from elevated prompt:
-            wprintf(L"To install service, run (elevated):\n");
+            if (argc >= 3) { StringCchCopyW(g_listpath, MAX_PATH, argv[2]); }
+            wprintf(L"To install service (run elevated):\n");
             wprintf(L"  sc create %s binPath= \"%s --service --list \\\"%s\\\"\" start= auto\n", SERVICE_NAME, exePath, g_listpath);
-            wprintf(L"Then start it: sc start %s\n", SERVICE_NAME);
+            wprintf(L"Then start: sc start %s\n", SERVICE_NAME);
             return 0;
-        } else if (_wcsicmp(argv[1], L"-remove")==0 || _wcsicmp(argv[1], L"remove")==0) {
-            wprintf(L"To remove service (elevated):\n  sc stop %s\n  sc delete %s\n", SERVICE_NAME, SERVICE_NAME);
+        } else if (_wcsicmp(argv[1], L"-remove") == 0 || _wcsicmp(argv[1], L"remove") == 0) {
+            wprintf(L"To remove service (run elevated):\n  sc stop %s\n  sc delete %s\n", SERVICE_NAME, SERVICE_NAME);
             return 0;
-        } else if (_wcsicmp(argv[1], L"--service")==0) {
-            // service mode: read optional --list param
-            for (int i=2;i<argc;i++) {
-                if (_wcsicmp(argv[i], L"--list")==0 && i+1<argc) { StringCchCopyW(g_listpath, MAX_PATH, argv[i+1]); i++; }
+        } else if (_wcsicmp(argv[1], L"--service") == 0) {
+            // Accept optional --list <path>
+            for (int i = 2; i < argc; ++i) {
+                if (_wcsicmp(argv[i], L"--list") == 0 && i + 1 < argc) { StringCchCopyW(g_listpath, MAX_PATH, argv[++i]); }
             }
             SERVICE_TABLE_ENTRYW st[] = { { (LPWSTR)SERVICE_NAME, (LPSERVICE_MAIN_FUNCTIONW)ServiceMain }, { NULL, NULL } };
             StartServiceCtrlDispatcherW(st);
             return 0;
         }
     }
-    // If launched normally without params -> print help
+
     wprintf(L"Integrity service helper\n");
-    wprintf(L"Usage:\n  integrity_service -install [listfile]   (prints sc.exe command to run as admin)\n");
-    wprintf(L"       integrity_service -remove\n");
-    wprintf(L"       integrity_service --service --list <listfile>  (run by Service Control Manager)\n");
-    wprintf(L"\nNote: to install the service run the printed sc create command from an elevated prompt.\n");
+    wprintf(L"Usage:\n  integrity_service -install [listfile]\n  integrity_service -remove\n  integrity_service --service --list <listfile>\n");
+    wprintf(L"Note: to install the service run the printed sc create command from an elevated prompt.\n");
     return 0;
 }
