@@ -10,9 +10,17 @@
 #include <stdio.h>
 #include <strsafe.h>
 #include <time.h>
+#include <stdarg.h>    // <- добавлено
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
+
+// Если на системе GUID_DEVINTERFACE_USB_DEVICE не определён, объявим его здесь:
+#ifndef GUID_DEVINTERFACE_USB_DEVICE
+// {A5DCBF10-6530-11D2-901F-00C04FB951ED}
+static const GUID GUID_DEVINTERFACE_USB_DEVICE =
+    {0xA5DCBF10, 0x6530, 0x11D2, {0x90,0x1F,0x00,0xC0,0x4F,0xB9,0x51,0xED}};
+#endif
 
 // Registry configuration path (HKLM)
 #define SERVICE_REG_PATH L"SOFTWARE\\UsbMonitorService"
@@ -117,7 +125,7 @@ void AppendLogToFile(const WCHAR *filepath, const WCHAR *msg) {
         return;
     }
     DWORD written = 0;
-    // convert msg (WCHAR) to UTF-8 for file (optional) or keep wide by writing as UTF-16LE BOM? we'll write UTF-8
+    // convert msg (WCHAR) to UTF-8 for file
     int utf8len = WideCharToMultiByte(CP_UTF8, 0, msg, -1, NULL, 0, NULL, NULL);
     if (utf8len > 0) {
         char *utf8 = (char*)malloc(utf8len);
@@ -135,10 +143,11 @@ void AppendLogToFile(const WCHAR *filepath, const WCHAR *msg) {
 
 // Called when device arrives/removes
 void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
+    (void)wParam; // убрать предупреждение о неиспользуемом параметре
     PDEV_BROADCAST_HDR pHdr = (PDEV_BROADCAST_HDR)lParam;
     if (!pHdr) return;
 
-    if (pHdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE || pHdr->dbch_devicetype == DBT_DEVTYP_HANDLE || pHdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+    if (pHdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE || pHdr->dbch_devicetype == DBT_DEVTYP_HANDLE) {
         PDEV_BROADCAST_DEVICEINTERFACE_W pDi = (PDEV_BROADCAST_DEVICEINTERFACE_W)pHdr;
         LPCWSTR devName = pDi->dbcc_name; // might be like \\?\USB#VID_xxxx&PID_xxxx#SERIAL#{...}
         wchar_t deviceInstanceId[1024] = {0};
@@ -149,7 +158,6 @@ void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
             LPCWSTR p = devName;
             if (wcsncmp(p, L"\\\\?\\", 4) == 0) p += 4;
             // replace '#' with '\' to form instance? Often device interface name contains '#' segments.
-            // We'll build an approximate instance id by copying and replacing '#' -> '\'
             size_t j=0;
             for (size_t i=0; p[i] && j < _countof(deviceInstanceId)-1; ++i) {
                 WCHAR ch = p[i];
@@ -158,18 +166,14 @@ void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
             deviceInstanceId[j]=0;
         }
 
-        // Another approach: enumerate SetupDi from GUID_DEVINTERFACE_USB_DEVICE and match name; but above often suffices.
-
         // Extract serial from instance id (last segment after last backslash)
         WCHAR serial[256] = L"(unknown)";
         LPCWSTR lastSlash = wcsrchr(deviceInstanceId, L'\\');
         if (lastSlash && *(lastSlash+1)) {
             wcsncpy_s(serial, _countof(serial), lastSlash+1, _TRUNCATE);
         } else if (devName) {
-            // fallback: try to parse last token from devName by '#'
             LPCWSTR lastHash = wcsrchr(devName, L'#');
             if (lastHash && *(lastHash+1)) {
-                // read until next '#', '{' or end
                 size_t i=0;
                 for (LPCWSTR q = lastHash+1; *q && *q != L'#' && *q != L'{' && i < _countof(serial)-1; ++q, ++i) serial[i]=*q;
                 serial[i]=0;
@@ -196,11 +200,9 @@ void OnDeviceArrivedOrRemoved(WPARAM wParam, LPARAM lParam, BOOL arrived) {
 
         // If arrived, check blocked list
         if (arrived) {
-            // check against blocked serials
             LPWSTR multi = NULL;
             DWORD sizeBytes = 0;
             if (ReadRegistryStrings(REG_VALUE_BLOCKED_SERIALS, &multi, &sizeBytes)) {
-                // iterate through multi-sz comparing case-insensitive
                 LPWSTR cur = multi;
                 BOOL blocked = FALSE;
                 while (*cur) {
@@ -228,18 +230,14 @@ void TryBlockDeviceByInstanceId(LPCWSTR deviceInstanceId) {
     CONFIGRET cr = CM_Locate_DevNodeW(&devinst, (DEVINSTID_W)deviceInstanceId, 0);
     if (cr != CR_SUCCESS) {
         WriteEventLog(EVENTLOG_ERROR_TYPE, L"CM_Locate_DevNode failed for '%s' (CR=%u)", deviceInstanceId, cr);
-        // try alternative: sometimes instance id must be like "USB\\VID_...\\SERIAL"
         return;
     }
 
-    // Try to disable the devnode
     cr = CM_Disable_DevNode(devinst, 0);
     if (cr == CR_SUCCESS) {
         WriteEventLog(EVENTLOG_INFORMATION_TYPE, L"Device '%s' disabled (CM_Disable_DevNode succeeded).", deviceInstanceId);
     } else {
-        WriteEventLog(EVENTLOG_ERROR_TYPE, L"Failed to disable device '%s' (CM_Disable_DevNode CR=%u). Attempting eject.", deviceInstanceId);
-        // Try to request eject (userless)
-        // Note: CM_Request_Device_EjectW normally shows UI; avoid UI by using flags? Best-effort; here we attempt and log result.
+        WriteEventLog(EVENTLOG_ERROR_TYPE, L"Failed to disable device '%s' (CM_Disable_DevNode CR=%u). Attempting eject.", deviceInstanceId, cr);
         PNP_VETO_TYPE vetoType;
         WCHAR vetoName[512];
         cr = CM_Request_Device_EjectW(devinst, &vetoType, vetoName, sizeof(vetoName)/sizeof(WCHAR), 0);
@@ -253,6 +251,7 @@ void TryBlockDeviceByInstanceId(LPCWSTR deviceInstanceId) {
 
 // Service control handler (extended)
 DWORD WINAPI ServiceCtrlHandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
+    (void)lpContext; // убрать предупреждение
     switch (dwControl) {
     case SERVICE_CONTROL_STOP:
         if (g_ServiceStatusHandle) {
@@ -270,7 +269,6 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpE
         return NO_ERROR;
 
     case SERVICE_CONTROL_DEVICEEVENT:
-        // dwEventType is DBT_*
         if (dwEventType == DBT_DEVICEARRIVAL || dwEventType == DBT_DEVICEREMOVECOMPLETE) {
             OnDeviceArrivedOrRemoved((WPARAM)0, (LPARAM)lpEventData, (dwEventType == DBT_DEVICEARRIVAL));
         }
@@ -286,12 +284,10 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpE
 
 // Register for device notifications using service handle (DEVICE_NOTIFY_SERVICE_HANDLE)
 BOOL RegisterForDeviceNotifications(SERVICE_STATUS_HANDLE hService) {
-    // Register for interface notifications for GUID_DEVINTERFACE_USB_DEVICE and GUID_DEVINTERFACE_USB_HUB etc
     DEV_BROADCAST_DEVICEINTERFACE_W NotificationFilter;
     ZeroMemory(&NotificationFilter, sizeof(NotificationFilter));
     NotificationFilter.dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE_W);
     NotificationFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
-    // GUID_DEVINTERFACE_USB_DEVICE: {A5DCBF10-6530-11D2-901F-00C04FB951ED}
     NotificationFilter.dbcc_classguid = GUID_DEVINTERFACE_USB_DEVICE;
 
     HDEVNOTIFY h = RegisterDeviceNotificationW((HANDLE)hService, &NotificationFilter, DEVICE_NOTIFY_SERVICE_HANDLE);
@@ -334,27 +330,22 @@ void WINAPI ServiceMain(DWORD dwArgc, LPWSTR *lpszArgv) {
         return;
     }
 
-    // Create stop event
     g_hStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
 
-    // set running
     ss.dwCurrentState = SERVICE_RUNNING;
     ss.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PARAMCHANGE | SERVICE_ACCEPT_SHUTDOWN;
     SetServiceStatus(g_ServiceStatusHandle, &ss);
 
-    // Register device notifications for this service
     RegisterForDeviceNotifications(g_ServiceStatusHandle);
 
     WriteEventLog(EVENTLOG_INFORMATION_TYPE, L"%s started.", SERVICE_NAME);
 
-    // Main loop: wait for stop event (service receives device events via HandlerEx)
     while (WaitForSingleObject(g_hStopEvent, 500) == WAIT_TIMEOUT) {
-        // Could reload config periodically if wanted (on param change)
+        // idle
     }
 
     WriteEventLog(EVENTLOG_INFORMATION_TYPE, L"%s stopping...", SERVICE_NAME);
 
-    // cleanup
     Cleanup();
 
     ss.dwCurrentState = SERVICE_STOPPED;
@@ -368,16 +359,13 @@ int wmain(int argc, wchar_t *argv[]) {
         { NULL, NULL }
     };
     if (!StartServiceCtrlDispatcherW(DispatchTable)) {
-        // If run from console for debug, allow running ServiceMain directly
         DWORD err = GetLastError();
         wprintf(L"StartServiceCtrlDispatcher failed: %u. If you want to run for debugging, start with /console.\n", err);
         if (argc > 1 && _wcsicmp(argv[1], L"/console") == 0) {
-            // Run as console for debugging
             g_hStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
             g_ServiceStatusHandle = (SERVICE_STATUS_HANDLE)0x1; // fake handle for RegisterDeviceNotification
             RegisterForDeviceNotifications(g_ServiceStatusHandle);
             WriteEventLog(EVENTLOG_INFORMATION_TYPE, L"Running in console mode (debug). Press Ctrl+C to exit.");
-            // simple loop
             while (1) Sleep(1000);
         }
         return 1;
