@@ -41,20 +41,16 @@ DWORD WINAPI client_thread(LPVOID arg) {
         if (r <= 0) break;
 
         if (strncmp(line, "MSG:", 4) == 0) {
-            // forward message header + newline and content already included in line
             if (other != INVALID_SOCKET) send(other, line, r, 0);
         } else if (strncmp(line, "FILE:", 5) == 0) {
-            // format: FILE:filename:filesize\n
             char filename[512];
             long long filesize = 0;
             if (sscanf(line+5, "%511[^:]:%lld", filename, &filesize) < 2) {
                 printf("Bad FILE header from client %d\n", ctx->id);
                 continue;
             }
-            // forward header
             if (other != INVALID_SOCKET) send(other, line, r, 0);
 
-            // now forward raw file bytes
             long long remaining = filesize;
             char buffer[CHUNK];
             while (remaining > 0) {
@@ -73,7 +69,6 @@ DWORD WINAPI client_thread(LPVOID arg) {
             }
             printf("Client %d sent file '%s' (%lld bytes) forwarded\n", ctx->id, filename, filesize);
         } else {
-            // unknown, just forward raw
             if (other != INVALID_SOCKET) send(other, line, r, 0);
         }
     }
@@ -141,7 +136,6 @@ int main(int argc, char **argv) {
     send(s1, "MSG:Server: second client connected. You can chat now.\n", 52, 0);
     send(s2, "MSG:Server: connected. You can chat now.\n", 40, 0);
 
-    // Prepare contexts
     SOCKET other1 = s2, other2 = s1;
     CLIENT_CTX ctx1 = { s1, 1, &other1 };
     CLIENT_CTX ctx2 = { s2, 2, &other2 };
@@ -149,7 +143,6 @@ int main(int argc, char **argv) {
     HANDLE t1 = CreateThread(NULL, 0, client_thread, &ctx1, 0, NULL);
     HANDLE t2 = CreateThread(NULL, 0, client_thread, &ctx2, 0, NULL);
 
-    // wait for threads
     WaitForSingleObject(t1, INFINITE);
     WaitForSingleObject(t2, INFINITE);
 

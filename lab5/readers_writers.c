@@ -1,6 +1,3 @@
-/* readers_writers.c
-   Compile: cl /nologo /W3 /Ox readers_writers.c
-*/
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdio.h>

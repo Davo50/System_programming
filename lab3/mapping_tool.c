@@ -1,8 +1,3 @@
-/* mapping_tool.c -- исправленная версия
-   Компиляция (MSVC):
-     cl /nologo /W4 /Ox mapping_tool.c
-*/
-
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdio.h>
@@ -10,7 +5,6 @@
 #include <ctype.h>
 #include <string.h>
 
-/* Прототипы */
 static int cmp_letters_case_insensitive(const void *pa, const void *pb);
 static int cmp_long_desc(const void *pa, const void *pb);
 
@@ -25,7 +19,6 @@ void print_help() {
     printf("  help\n");
 }
 
-/* Отобразить файл RW полностью */
 char* map_file_rw(const char* path, HANDLE* outFile, HANDLE* outMap, size_t* outSize) {
     *outFile = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (*outFile == INVALID_HANDLE_VALUE) {
@@ -60,7 +53,6 @@ char* map_file_rw(const char* path, HANDLE* outFile, HANDLE* outMap, size_t* out
     return view;
 }
 
-/* Компаратор для букв: нечувствительная к регистру; при равенстве - сравнение по исходному байту */
 static int cmp_letters_case_insensitive(const void *pa, const void *pb) {
     unsigned char a = *(const unsigned char*)pa;
     unsigned char b = *(const unsigned char*)pb;
@@ -68,19 +60,16 @@ static int cmp_letters_case_insensitive(const void *pa, const void *pb) {
     unsigned char lb = (unsigned char)tolower(b);
     if (la < lb) return -1;
     if (la > lb) return 1;
-    /* если одинаковы по tolower, использовать байтовый порядок (чтобы, например, 'A' < 'b' детерминировано) */
     if (a < b) return -1;
     if (a > b) return 1;
     return 0;
 }
 
-/* 1) sortletters */
 int cmd_sortletters(const char* path) {
     HANDLE hf, hm; size_t sz;
     char* view = map_file_rw(path, &hf, &hm, &sz);
     if (!view) return 1;
 
-    /* Собираем все буквенные символы в отдельный массив и индексы их позиций */
     size_t cap = 256, count = 0;
     size_t *indices = malloc(cap * sizeof(size_t));
     unsigned char *letters = malloc(cap * sizeof(unsigned char));
@@ -119,10 +108,8 @@ int cmd_sortletters(const char* path) {
         return 0;
     }
 
-    /* Сортируем массив букв (используем qsort с нашим компаратором) */
     qsort(letters, count, sizeof(unsigned char), cmp_letters_case_insensitive);
 
-    /* Записываем отсортированные буквы обратно по тем же позициям */
     for (size_t k = 0; k < count; ++k) {
         view[indices[k]] = (char)letters[k];
     }
@@ -137,7 +124,6 @@ int cmd_sortletters(const char* path) {
     return 0;
 }
 
-/* 2) countcase */
 int cmd_countcase(const char* path) {
     HANDLE hf, hm; size_t sz;
     char* view = map_file_rw(path, &hf, &hm, &sz);
@@ -157,7 +143,6 @@ int cmd_countcase(const char* path) {
     return 0;
 }
 
-/* 3) removea: удалить все 'a' и 'A', в конец добавить CRLF + сообщение */
 int cmd_removea(const char* path) {
     HANDLE hf = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hf == INVALID_HANDLE_VALUE) {
@@ -196,13 +181,11 @@ int cmd_removea(const char* path) {
     int slen = snprintf(suf, sizeof(suf), "\r\nRemoved: %zu\r\n", removed);
     size_t newSize = o + (size_t)slen;
 
-    /* Отсоединяем, обрезаем файл, затем снова mapping и записываем */
     UnmapViewOfFile(view);
     CloseHandle(hm);
 
     LARGE_INTEGER pos;
     pos.QuadPart = (LONGLONG)newSize;
-    /* Перемещаем указатель в начало файла + newSize и устанавливаем конец файла */
     if (!SetFilePointerEx(hf, pos, NULL, FILE_BEGIN) || !SetEndOfFile(hf)) {
         printf("Не удалось установить новый размер файла: %lu\n", GetLastError());
         CloseHandle(hf);
@@ -227,7 +210,6 @@ int cmd_removea(const char* path) {
     return 0;
 }
 
-/* Компаратор для long по убыванию */
 static int cmp_long_desc(const void *pa, const void *pb) {
     long a = *(const long*)pa;
     long b = *(const long*)pb;
@@ -236,7 +218,6 @@ static int cmp_long_desc(const void *pa, const void *pb) {
     return 0;
 }
 
-/* 4) sortnums: парсим числа, сортируем по убыванию и перезаписываем файл */
 int cmd_sortnums(const char* path) {
     HANDLE hf, hm; size_t sz;
     char* view = map_file_rw(path, &hf, &hm, &sz);
@@ -254,7 +235,7 @@ int cmd_sortnums(const char* path) {
         if (!*p) break;
         char *end;
         long val = strtol(p, &end, 10);
-        if (end == p) { ++p; continue; } /* не число — пропустить символ */
+        if (end == p) { ++p; continue; }
         if (cnt == cap) {
             cap = cap ? cap * 2 : 64;
             nums = realloc(nums, cap * sizeof(long));
@@ -276,7 +257,6 @@ int cmd_sortnums(const char* path) {
 
     qsort(nums, cnt, sizeof(long), cmp_long_desc);
 
-    /* Сформируем выходную строку */
     size_t outcap = cnt * 24 + 16;
     char *out = malloc(outcap);
     if (!out) { printf("Нет памяти\n"); free(buf); free(nums); UnmapViewOfFile(view); CloseHandle(hm); CloseHandle(hf); return 1; }
@@ -288,7 +268,6 @@ int cmd_sortnums(const char* path) {
         if (i + 1 < cnt) out[pos++] = ' ';
     }
 
-    /* Записываем обратно: сначала размэппим, изменим размер, затем запишем */
     UnmapViewOfFile(view);
     CloseHandle(hm);
 
@@ -319,13 +298,11 @@ int cmd_sortnums(const char* path) {
     return 0;
 }
 
-/* Интерактивный цикл (простой) */
 void interactive_loop() {
     char line[512];
     while (1) {
         printf("mapping> ");
         if (!fgets(line, sizeof(line), stdin)) break;
-        /* trim newline */
         char *p = line; while (*p && *p != '\n' && *p != '\r') ++p; *p = 0;
         if (strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) break;
         if (strlen(line) == 0) continue;

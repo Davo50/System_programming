@@ -1,8 +1,3 @@
-/* fileops.c
-   Компиляция (MSVC):
-     cl /nologo /W4 /Ox fileops.c
-*/
-
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdio.h>
@@ -123,7 +118,7 @@ void print_attributes(const char* path) {
     if (a & FILE_ATTRIBUTE_READONLY) printf("  READONLY\n");
     if (a & FILE_ATTRIBUTE_SYSTEM) printf("  SYSTEM\n");
     if (a & FILE_ATTRIBUTE_TEMPORARY) printf("  TEMPORARY\n");
-    /* можно добавить другие атрибуты при необходимости */
+
 }
 
 void set_readonly(const char* path, int on) {
@@ -148,8 +143,6 @@ void list_folder_recursive(const char* folder, int level) {
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(searchPath, &fd);
     if (h == INVALID_HANDLE_VALUE) {
-        // возможно папка пуста или недоступна
-        //printf("FindFirstFile failed for %s: %lu\n", folder, GetLastError());
         return;
     }
     do {
@@ -181,22 +174,19 @@ void interactive_loop() {
     while (1) {
         printf("\nfileops> ");
         if (!fgets(cmd, sizeof(cmd), stdin)) break;
-        // trim newline
         char* p = cmd;
         while(*p && *p!='\n' && *p!='\r') p++;
         *p = 0;
         if (strlen(cmd)==0) continue;
         if (strcmp(cmd, "exit")==0 || strcmp(cmd, "quit")==0) break;
         if (strcmp(cmd, "help")==0) { print_help(); continue; }
-        // простое парсирование: разделяем пробелами
         char *args[4]; int cnt=0;
         char *tok = strtok(cmd, " ");
         while (tok && cnt<4) { args[cnt++]=tok; tok=strtok(NULL,""); if (cnt==1 && tok) { /* keep rest as one arg */ break; } }
-        // note: для простоты оставшиеся пробелы в content оставлены целиком при create
         if (cnt==0) continue;
         if (strcmp(args[0],"create")==0 && cnt>=2) {
             char *content = "";
-            if (cnt==2) content = ""; // пустое
+            if (cnt==2) content = "";
             if (cnt==3) content = args[2];
             create_and_write(args[1], content);
         } else if (strcmp(args[0],"read")==0 && cnt==2) read_and_print(args[1]);

@@ -12,7 +12,6 @@ DWORD WINAPI recv_thread(LPVOID arg) {
     SOCKET s = (SOCKET)(size_t)arg;
     char line[1024];
     while (1) {
-        // read header line
         int idx = 0;
         char c;
         int r;
@@ -24,7 +23,7 @@ DWORD WINAPI recv_thread(LPVOID arg) {
         }
         line[idx] = 0;
         if (strncmp(line, "MSG:", 4) == 0) {
-            printf("%s", line+4); // print sender+message
+            printf("%s", line+4);
         } else if (strncmp(line, "FILE:", 5) == 0) {
             char filename[512];
             long long filesize = 0;
@@ -32,13 +31,11 @@ DWORD WINAPI recv_thread(LPVOID arg) {
                 printf("Bad FILE header\n");
                 continue;
             }
-            // open file to write
             char outname[600];
             snprintf(outname, sizeof(outname), "recv_%s", filename);
             FILE *f = fopen(outname, "wb");
             if (!f) {
                 printf("Cannot create file %s\n", outname);
-                // still need to drain incoming bytes
                 char tmp[CHUNK];
                 long long rem = filesize;
                 while (rem > 0) {
@@ -60,7 +57,6 @@ DWORD WINAPI recv_thread(LPVOID arg) {
             fclose(f);
             printf("Received file '%s' saved as '%s' (%lld bytes)\n", filename, outname, filesize);
         } else {
-            // unknown -- print raw
             printf("RECV RAW: %s", line);
         }
     }
@@ -72,7 +68,6 @@ done:
 int send_file(SOCKET s, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { printf("Cannot open %s\n", path); return 1; }
-    // extract filename
     const char *p = strrchr(path, '\\');
     if (!p) p = strrchr(path, '/');
     const char *filename = p ? p+1 : path;

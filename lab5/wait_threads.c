@@ -1,6 +1,3 @@
-/* wait_threads.c
-   Compile: cl /nologo /W3 /Ox wait_threads.c
-*/
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdio.h>
@@ -11,21 +8,21 @@ HANDLE hThread1 = NULL, hThread2 = NULL, hThread3 = NULL;
 DWORD WINAPI ThreadFunc1(LPVOID arg) {
     while (1) {
         InterlockedIncrement(&c1);
-        Sleep(2); // speed 1
+        Sleep(2);
     }
     return 0;
 }
 DWORD WINAPI ThreadFunc2(LPVOID arg) {
     while (1) {
         InterlockedIncrement(&c2);
-        Sleep(5); // speed 2 (will be suspended)
+        Sleep(5);
     }
     return 0;
 }
 DWORD WINAPI ThreadFunc3(LPVOID arg) {
     while (1) {
         InterlockedIncrement(&c3);
-        Sleep(1); // speed 3 (fast)
+        Sleep(1);
     }
     return 0;
 }

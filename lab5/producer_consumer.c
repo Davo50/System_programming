@@ -1,6 +1,3 @@
-/* producer_consumer.c
-   Compile: cl /nologo /W3 /Ox producer_consumer.c
-*/
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdio.h>
@@ -13,8 +10,8 @@ typedef struct Node {
 
 static Node* head = NULL;
 static CRITICAL_SECTION cs;
-static HANDLE hItems;  // counts items in list
-static HANDLE hSpace;  // counts available space (optional)
+static HANDLE hItems;
+static HANDLE hSpace;
 static volatile LONG total_produced = 0;
 static volatile LONG total_consumed = 0;
 static int PRODUCE_EACH = 10;
@@ -46,7 +43,7 @@ int pop_item(int* out) {
 DWORD WINAPI Producer(LPVOID arg) {
     int id = (int)(intptr_t)arg;
     for (int i = 0; i < PRODUCE_EACH; ++i) {
-        WaitForSingleObject(hSpace, INFINITE); // wait for space
+        WaitForSingleObject(hSpace, INFINITE);
         int val = id * 1000 + i;
         push_item(val);
         InterlockedIncrement(&total_produced);
@@ -67,11 +64,8 @@ DWORD WINAPI Consumer(LPVOID arg) {
             printf("  [Consumer %d] consumed %d (total consumed: %ld)\n", id, val, total_consumed);
             ReleaseSemaphore(hSpace, 1, NULL);
         }
-        // stop condition: when consumed equals expected produced
-        // But we don't know expected until producers finish. Use a check:
         if (InterlockedCompareExchange(&total_consumed, 0, 0) >= InterlockedCompareExchange(&total_produced, 0, 0)
             && InterlockedCompareExchange(&total_produced, 0, 0) != 0) {
-            // If produced >0 and consumed >= produced -> finish
             break;
         }
         Sleep((rand() % 200) + 50);
@@ -102,9 +96,6 @@ int main(int argc, char** argv) {
     }
     // wait producers
     WaitForMultipleObjects(np, ph, TRUE, INFINITE);
-    // now producers finished; total_produced set
-    // release consumers if they are waiting and there are no more items
-    // Wait for consumers: they will exit when consumed >= produced
     WaitForMultipleObjects(nc, ph + np, TRUE, INFINITE);
 
     // cleanup
@@ -113,7 +104,6 @@ int main(int argc, char** argv) {
     CloseHandle(hItems);
     CloseHandle(hSpace);
     DeleteCriticalSection(&cs);
-    // free any remaining nodes
     while (head) {
         Node* n = head;
         head = head->next;

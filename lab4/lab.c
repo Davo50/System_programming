@@ -1,10 +1,3 @@
-/* lab4.c
-   Windows (MSVC) single-file utility implementing Lab #4 tasks:
-   - createproc <command line...>
-   - listproc
-   - createthreads [N]
-   - showmodules  (uses NtQueryInformationProcess + ReadProcessMemory)
-*/
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <tlhelp32.h>
@@ -14,7 +7,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* --- Forward declarations for NtQueryInformationProcess types --- */
 typedef LONG NTSTATUS;
 typedef NTSTATUS (NTAPI *PFN_NTQUERYINFORMATIONPROCESS)(
     HANDLE ProcessHandle,
@@ -24,7 +16,6 @@ typedef NTSTATUS (NTAPI *PFN_NTQUERYINFORMATIONPROCESS)(
     PULONG ReturnLength
 );
 
-/* PROCESS_BASIC_INFORMATION (minimal) */
 typedef struct _PROCESS_BASIC_INFORMATION {
     PVOID Reserved1;
     PVOID PebBaseAddress;
@@ -33,14 +24,12 @@ typedef struct _PROCESS_BASIC_INFORMATION {
     PVOID Reserved3;
 } PROCESS_BASIC_INFORMATION;
 
-/* Minimal UNICODE_STRING */
 typedef struct _UNICODE_STRING_INTERNAL {
     USHORT Length;
     USHORT MaximumLength;
-    PVOID  Buffer; /* PWSTR in target process */
+    PVOID  Buffer;
 } UNICODE_STRING_INTERNAL;
 
-/* Minimal LDR_DATA_TABLE_ENTRY (partial) */
 typedef struct _LDR_DATA_TABLE_ENTRY_INTERNAL {
     LIST_ENTRY InLoadOrderLinks;
     LIST_ENTRY InMemoryOrderLinks;
@@ -50,10 +39,8 @@ typedef struct _LDR_DATA_TABLE_ENTRY_INTERNAL {
     ULONG SizeOfImage;
     UNICODE_STRING_INTERNAL FullDllName;
     UNICODE_STRING_INTERNAL BaseDllName;
-    /* ... */
 } LDR_DATA_TABLE_ENTRY_INTERNAL;
 
-/* Minimal PEB_LDR_DATA */
 typedef struct _PEB_LDR_DATA_INTERNAL {
     ULONG Length;
     BOOLEAN Initialized;
@@ -63,17 +50,14 @@ typedef struct _PEB_LDR_DATA_INTERNAL {
     LIST_ENTRY InInitializationOrderModuleList;
 } PEB_LDR_DATA_INTERNAL;
 
-/* Minimal PEB (partial) */
 typedef struct _PEB_INTERNAL {
     BYTE Reserved1[2];
     BYTE BeingDebugged;
     BYTE Reserved2[1];
     PVOID Reserved3[2];
     PEB_LDR_DATA_INTERNAL *Ldr;
-    /* ... */
 } PEB_INTERNAL;
 
-/* Helpers */
 static void print_usage(const char *prog) {
     printf("Usage:\n");
     printf("  %s createproc <command line>    - create process and wait\n", prog);
@@ -168,7 +152,7 @@ static int cmd_createthreads(int argc, char **argv) {
     int n = 5;
     if (argc >= 2) n = atoi(argv[1]);
     if (n <= 0) n = 5;
-    if (n > 64) n = 64; /* arbitrary limit */
+    if (n > 64) n = 64;
 
     HANDLE *threads = (HANDLE*)malloc(sizeof(HANDLE) * n);
     if (!threads) return 1;
@@ -201,7 +185,7 @@ static BOOL read_mem(HANDLE hProc, LPCVOID addr, PVOID buf, SIZE_T size) {
     return ReadProcessMemory(hProc, addr, buf, size, &read) && read == size;
 }
 
-/* Task 4: Show modules via PEB (using NtQueryInformationProcess + ReadProcessMemory) */
+/* Task 4: Show modules via PEB */
 static int cmd_showmodules(void) {
     HMODULE ntdll = LoadLibraryA("ntdll.dll");
     if (!ntdll) {
@@ -253,20 +237,15 @@ static int cmd_showmodules(void) {
 
     printf("Loaded modules (BaseDllName) for current process:\n");
 
-    /* iterate: start from headEntry.Flink */
     PBYTE flinkAddr = (PBYTE)headEntry.Flink;
-    /* loop until we come back to head_addr (list is circular) */
     while (flinkAddr != NULL && flinkAddr != head_addr) {
-        /* address of LDR_DATA_TABLE_ENTRY = flinkAddr - offsetof(InLoadOrderLinks) */
         PBYTE entryAddr = flinkAddr - offsetof(LDR_DATA_TABLE_ENTRY_INTERNAL, InLoadOrderLinks);
 
         LDR_DATA_TABLE_ENTRY_INTERNAL loaded;
         if (!read_mem(GetCurrentProcess(), entryAddr, &loaded, sizeof(loaded))) break;
 
-        /* Read BaseDllName buffer (wide string) */
         if (loaded.BaseDllName.Length > 0 && loaded.BaseDllName.Buffer) {
             SIZE_T bufBytes = loaded.BaseDllName.Length;
-            /* allocate and read wide chars */
             wchar_t *wbuf = (wchar_t*)malloc(bufBytes + sizeof(wchar_t));
             if (wbuf) {
                 if (read_mem(GetCurrentProcess(), loaded.BaseDllName.Buffer, wbuf, bufBytes)) {
@@ -285,7 +264,6 @@ static int cmd_showmodules(void) {
             }
         }
 
-        /* advance to next: loaded.InLoadOrderLinks.Flink holds pointer to next LIST_ENTRY */
         flinkAddr = (PBYTE)loaded.InLoadOrderLinks.Flink;
     }
 
