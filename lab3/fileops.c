@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 void print_help() {
     printf("fileops.exe - утилита для базовых операций с файлами (WinAPI)\n");
@@ -35,40 +36,65 @@ void create_and_write(const char* path, const char* content) {
     CloseHandle(h);
 }
 
+// Обновлённая функция: чтение файла любого размера (потоковое чтение по кускам)
 void read_and_print(const char* path) {
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         printf("Ошибка CreateFile (open): %lu\n", GetLastError());
         return;
     }
-    LARGE_INTEGER sz;
-    if (!GetFileSizeEx(h, &sz)) {
-        printf("Ошибка GetFileSizeEx: %lu\n", GetLastError());
+
+    LARGE_INTEGER szli;
+    BOOL gotSize = GetFileSizeEx(h, &szli);
+
+    printf("---- содержимое %s ----\n", path);
+
+    const DWORD CHUNK = 64 * 1024; // 64KB
+    char* buf = (char*)malloc(CHUNK);
+    if (!buf) {
+        printf("Нет памяти\n");
         CloseHandle(h);
         return;
     }
-    if (sz.QuadPart == 0) {
-        printf("[пустой файл]\n");
-        CloseHandle(h);
-        return;
+
+    if (gotSize) {
+        // Чтение известного размера файла по частям (поддерживает >2GB)
+        unsigned long long remaining = (unsigned long long)szli.QuadPart;
+        if (remaining == 0) {
+            printf("[пустой файл]\n");
+            free(buf);
+            CloseHandle(h);
+            return;
+        }
+        while (remaining > 0) {
+            DWORD toRead = (DWORD)(remaining > CHUNK ? CHUNK : remaining);
+            DWORD read = 0;
+            if (!ReadFile(h, buf, toRead, &read, NULL)) {
+                printf("\nОшибка ReadFile: %lu\n", GetLastError());
+                break;
+            }
+            if (read == 0) break; // EOF
+            size_t wrote = fwrite(buf, 1, read, stdout);
+            (void)wrote;
+            remaining -= read;
+        }
+    } else {
+        // Если размер получить не удалось (например, специальный файл/пайп), читаем, пока ReadFile возвращает данные
+        DWORD read = 0;
+        while (1) {
+            if (!ReadFile(h, buf, CHUNK, &read, NULL)) {
+                DWORD err = GetLastError();
+                if (err == ERROR_HANDLE_EOF || read == 0) break;
+                printf("\nОшибка ReadFile: %lu\n", err);
+                break;
+            }
+            if (read == 0) break;
+            size_t wrote = fwrite(buf, 1, read, stdout);
+            (void)wrote;
+        }
     }
-    if (sz.QuadPart > 100*1024*1024) {
-        printf("Файл слишком большой (>100MB) — чтение отменено.\n");
-        CloseHandle(h);
-        return;
-    }
-    DWORD toRead = (DWORD)sz.QuadPart;
-    char* buf = malloc(toRead + 1);
-    if (!buf) { CloseHandle(h); printf("Нет памяти\n"); return; }
-    DWORD read;
-    if (!ReadFile(h, buf, toRead, &read, NULL)) {
-        printf("Ошибка ReadFile: %lu\n", GetLastError());
-        free(buf);
-        CloseHandle(h);
-        return;
-    }
-    buf[read] = 0;
-    printf("---- содержимое %s ----\n%s\n---- конец ----\n", path, buf);
+
+    printf("\n---- конец ----\n");
     free(buf);
     CloseHandle(h);
 }
