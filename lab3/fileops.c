@@ -36,7 +36,6 @@ void create_and_write(const char* path, const char* content) {
     CloseHandle(h);
 }
 
-// Обновлённая функция: чтение файла любого размера (потоковое чтение по кускам)
 void read_and_print(const char* path) {
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
@@ -58,7 +57,6 @@ void read_and_print(const char* path) {
     }
 
     if (gotSize) {
-        // Чтение известного размера файла по частям (поддерживает >2GB)
         unsigned long long remaining = (unsigned long long)szli.QuadPart;
         if (remaining == 0) {
             printf("[пустой файл]\n");
@@ -79,7 +77,6 @@ void read_and_print(const char* path) {
             remaining -= read;
         }
     } else {
-        // Если размер получить не удалось (например, специальный файл/пайп), читаем, пока ReadFile возвращает данные
         DWORD read = 0;
         while (1) {
             if (!ReadFile(h, buf, CHUNK, &read, NULL)) {
